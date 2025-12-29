@@ -1,0 +1,120 @@
+name: WIN 11
+
+on:
+  workflow_dispatch:
+
+jobs:
+  SK-Run:
+    name: Click Me!!
+    runs-on: windows-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: Configure Core RDP Settings
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+            -Name "fDenyTSConnections" -Value 0 -Force
+
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name "UserAuthentication" -Value 0 -Force
+
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name "SecurityLayer" -Value 0 -Force
+
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+
+          Restart-Service -Name TermService -Force
+
+      - name: Create RDP User
+        run: |
+          $password = ConvertTo-SecureString "SK@12345" -AsPlainText -Force
+          # Changed username to SKM
+          New-LocalUser -Name "SKM" -Password $password -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "SKM"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "SKM"
+
+          echo "RDP_USER=SKM" >> $env:GITHUB_ENV
+          echo "RDP_PASS=SK@12345" >> $env:GITHUB_ENV
+
+      - name: Install Tailscale
+        run: |
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $path = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest $url -OutFile $path
+          Start-Process msiexec.exe -ArgumentList "/i `"$path`" /quiet /norestart" -Wait
+          Remove-Item $path -Force
+
+      - name: Download MuMu Player Installer Only
+        run: |
+          $mumuUrl = "https://adl.easebar.com/d/g/mumu/c/mumuglobal?type=pc&direct=1"
+
+          $savePath = "C:\Users\Public\Desktop\MuMuInstaller.exe"
+
+          Invoke-WebRequest -Uri $mumuUrl -OutFile $savePath
+
+          if (Test-Path $savePath) {
+            Write-Host "MuMu Installer downloaded successfully!"
+            Write-Host "FILE PATH: $savePath"
+            echo "MUMU_INSTALLER_PATH=$savePath" >> $env:GITHUB_ENV
+          } else {
+            Write-Error "MuMu download failed"
+            exit 1
+          }
+
+      - name: Install Softwares (WinRAR Only) and Configure Auto-Start
+        run: |
+          # --- CHECK SIZE OF MUMU INSTALLER ---
+          $mumuPath = "$env:MUMU_INSTALLER_PATH"
+          if (Test-Path $mumuPath) {
+            $size = (Get-Item $mumuPath).Length / 1MB
+            $sizeFormatted = "{0:N2}" -f $size
+            Write-Host "SIZE CHECK: MuMu Installer size is $sizeFormatted MB"
+          }
+
+          # --- INSTALL ONLY WINRAR ---
+          # Office removed as per request. Chrome is pre-installed.
+          Write-Host "Installing WinRAR only..."
+          choco install winrar -y --no-progress
+
+          # --- CONFIGURE AUTO-START ---
+          $startupPath = "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp"
+          $batFile = "$startupPath\OpenYT.bat"
+          
+          # Script to open Chrome with specific URL immediately
+          $content = 'start chrome "https://youtube.com/@factstreamzs?si=MrzcBbz4UPPcs_9q" --new-window --start-maximized'
+          Set-Content -Path $batFile -Value $content -Encoding Ascii
+          
+          Write-Host "WinRAR installed. Auto-start configured."
+
+      - name: Establish Tailscale Connection
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
+            --hostname=gh-runner-$env:GITHUB_RUN_ID
+
+          $ip = $null
+          for ($i=0; $i -lt 10; $i++) {
+            $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+            if ($ip) { break }
+            Start-Sleep 5
+          }
+
+          if (-not $ip) { exit 1 }
+          echo "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
+
+      - name: Verify RDP
+        run: |
+          Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+
+      - name: Maintain Connection
+        run: |
+          Write-Host "=========================="
+          Write-Host "RDP IP : $env:TAILSCALE_IP"
+          Write-Host "USER   : SKM"
+          Write-Host "PASS   : SK@12345"
+          Write-Host "=========================="
+
+          while ($true) {
+            Start-Sleep 300
+          }
