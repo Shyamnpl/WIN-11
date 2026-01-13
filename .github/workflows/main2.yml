@@ -1,12 +1,10 @@
-name: WIN 11
-
-on:
+name: on:
   workflow_dispatch:
     inputs:
+      instance_id:   # <--- Ye naya hai (Database ID)
+        required: true
       user_id:
-        description: 'User ID for Database'
-        required: false
-        default: 'admin'
+        required: true
 jobs:
   SK-Run:
     name: Click Me!!
@@ -96,6 +94,30 @@ jobs:
 
           if (-not $ip) { exit 1 }
           echo "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
+
+
+      - name: Send IP Back to Firebase
+        run: |
+          $IP = $env:TAILSCALE_IP
+          $DOC_ID = "${{ github.event.inputs.instance_id }}"
+          $UID = "${{ github.event.inputs.user_id }}"
+          # Replace 'rdp-manager-v2' with YOUR actual Project ID
+          $PROJECT_ID = "rdp-manager-2f92e" 
+          
+          # Firestore REST API URL
+          $url = "https://firestore.googleapis.com/v1/projects/$PROJECT_ID/databases/(default)/documents/users/$UID/instances/$DOC_ID?updateMask.fieldPaths=ip&updateMask.fieldPaths=status"
+          
+          # JSON Payload (IP update kar rahe hain)
+          $body = @{
+            fields = @{
+              ip = @{ stringValue = $IP }
+              status = @{ stringValue = "Active" }
+            }
+          } | ConvertTo-Json -Depth 10
+
+          # Send Request
+          Invoke-RestMethod -Method Patch -Uri $url -Body $body -ContentType "application/json"
+
 
       - name: Verify RDP
         run: |
