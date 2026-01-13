@@ -64,40 +64,54 @@ jobs:
           Write-Host "Installing WinRAR only..."
           choco install winrar -y --no-progress
 
-      # --- PLAYIT.GG SECTION START (Fixed & Robust) ---
+      # --- PLAYIT.GG SECTION (v0.16.5 EXE) ---
       
       - name: Install & Run Playit.gg
         run: |
-          # 1. Download Playit Agent (Simpler Path)
-          Write-Host "Downloading Playit.gg..."
-          $playitUrl = "https://github.com/playit-cloud/playit-agent/releases/download/v0.15.26/playit-windows-amd64.exe"
+          # 1. Download Playit Agent (Specific Version v0.16.5 EXE)
+          Write-Host "Downloading Playit.gg v0.16.5..."
+          
+          # Hum MSI nahi, EXE use kar rahe hain taaki command line se chala sakein
+          $playitUrl = "https://github.com/playit-cloud/playit-agent/releases/download/v0.16.5/playit-windows-x86_64.exe"
           $playitPath = "C:\playit.exe"
-          Invoke-WebRequest $playitUrl -OutFile $playitPath
+          
+          try {
+              # Download with UserAgent to avoid GitHub blocking
+              Invoke-WebRequest $playitUrl -OutFile $playitPath -UserAgent "Mozilla/5.0" -ErrorAction Stop
+              Write-Host "Download Success!"
+          } catch {
+              Write-Error "Download Failed! Error: $_"
+              exit 1
+          }
 
-          # 2. Start Playit in Background with Secret
+          # 2. Start Playit in Background
           Write-Host "Starting Playit Tunnel..."
           $secret = "${{ secrets.PLAYIT_SECRET }}"
           
-          # Start Process and send logs to a file
+          # Check if file exists before running
+          if (-not (Test-Path $playitPath)) {
+            Write-Error "File not found at $playitPath"
+            exit 1
+          }
+
+          # Start Process
           $process = Start-Process -FilePath $playitPath -ArgumentList "--secret $secret" -PassThru -NoNewWindow -RedirectStandardOutput "playit.log" -RedirectStandardError "playit_err.log"
           
-          # Wait 10 seconds for initial boot
-          Start-Sleep -Seconds 10
+          # Wait 15 seconds for boot
+          Start-Sleep -Seconds 15
 
       - name: Fetch Playit URL & Update Firebase
         run: |
           $foundUrl = $null
-          $maxRetries = 30  # Wait up to 3 Minutes
+          $maxRetries = 30 
           
-          Write-Host "Looking for Public URL in logs..."
+          Write-Host "Scanning logs for Public URL..."
           
           for ($i=0; $i -lt $maxRetries; $i++) {
-            # Read logs
             $logContent = Get-Content "playit.log" -ErrorAction SilentlyContinue
             
-            # Search for the address pattern
             foreach ($line in $logContent) {
-                # Matches patterns like: something.playit.gg:12345 OR something.gl.joinmc.link:12345
+                # Match address pattern
                 if ($line -match '(\S+\.playit\.gg:\d+)|(\S+\.gl\.joinmc\.link:\d+)|(\S+\.ply\.gg:\d+)') {
                     $foundUrl = $matches[0]
                     break
@@ -106,16 +120,15 @@ jobs:
             
             if ($foundUrl) { break }
             
-            Write-Host "Waiting for Tunnel/URL... ($i/$maxRetries)"
+            Write-Host "Waiting for Tunnel... ($i/$maxRetries)"
             Start-Sleep -Seconds 6
           }
 
-          # Debug: Show logs if failed
           if (-not $foundUrl) {
-            Write-Host "--- PLAYIT LOGS (LAST 20 LINES) ---"
+            Write-Host "--- LOGS FOR DEBUGGING ---"
             Get-Content "playit.log" -Tail 20
-            Write-Host "-----------------------------------"
-            Write-Error "CRITICAL: Could not find Playit Public URL! Did you create the Tunnel on the website?"
+            Write-Host "--------------------------"
+            Write-Error "CRITICAL: URL nahi mila! Check Playit Dashboard > Tunnels."
             exit 1
           }
 
