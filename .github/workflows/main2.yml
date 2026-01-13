@@ -64,72 +64,66 @@ jobs:
           Write-Host "Installing WinRAR only..."
           choco install winrar -y --no-progress
 
-      # --- PLAYIT.GG SECTION START (Free & No Credit Card) ---
+      # --- PLAYIT.GG SECTION START (Fixed & Robust) ---
       
       - name: Install & Run Playit.gg
         run: |
-          # 1. Download Playit Agent
+          # 1. Download Playit Agent (Simpler Path)
           Write-Host "Downloading Playit.gg..."
           $playitUrl = "https://github.com/playit-cloud/playit-agent/releases/download/v0.15.26/playit-windows-amd64.exe"
-          $playitPath = "C:\Users\Public\playit.exe"
+          $playitPath = "C:\playit.exe"
           Invoke-WebRequest $playitUrl -OutFile $playitPath
 
-          # 2. Start Playit in Background & Log Output
+          # 2. Start Playit in Background with Secret
           Write-Host "Starting Playit Tunnel..."
           $secret = "${{ secrets.PLAYIT_SECRET }}"
           
-          # Start Process and Redirect Output to file to capture IP later
+          # Start Process and send logs to a file
           $process = Start-Process -FilePath $playitPath -ArgumentList "--secret $secret" -PassThru -NoNewWindow -RedirectStandardOutput "playit.log" -RedirectStandardError "playit_err.log"
           
-          # Wait for connection (Playit takes a few seconds to allocate)
-          Write-Host "Waiting 20 seconds for Playit allocation..."
-          Start-Sleep -Seconds 20
+          # Wait 10 seconds for initial boot
+          Start-Sleep -Seconds 10
 
       - name: Fetch Playit URL & Update Firebase
         run: |
-          # 3. Read Logs to find the Public Address
-          $logContent = Get-Content "playit.log" -ErrorAction SilentlyContinue
+          $foundUrl = $null
+          $maxRetries = 30  # Wait up to 3 Minutes
           
-          # Debug: Print logs to see what happened
-          Write-Host "--- PLAYIT LOGS ---"
-          $logContent | Select-Object -Last 10
-          Write-Host "-------------------"
-
-          # 4. Parse the Address using Regex
-          # Playit logs usually show: "tunnel running" ... "address": "ip:port"
-          # Or we query local API if available. Since logs vary, we try to match the .gl.joinmc.link or .playit.gg pattern
+          Write-Host "Looking for Public URL in logs..."
           
-          $publicUrl = $null
-          foreach ($line in $logContent) {
-            if ($line -match '(\S+\.playit\.gg:\d+)|(\S+\.gl\.joinmc\.link:\d+)') {
-              $publicUrl = $matches[0]
-              break
-            }
-          }
-
-          # Fallback: If regex fails, wait more and try again (Sometimes takes longer)
-          if (-not $publicUrl) {
-             Write-Host "URL not found yet, waiting 10 more seconds..."
-             Start-Sleep -Seconds 10
-             $logContent = Get-Content "playit.log"
-             foreach ($line in $logContent) {
-                if ($line -match '(\S+\.playit\.gg:\d+)|(\S+\.gl\.joinmc\.link:\d+)') {
-                  $publicUrl = $matches[0]
-                  break
+          for ($i=0; $i -lt $maxRetries; $i++) {
+            # Read logs
+            $logContent = Get-Content "playit.log" -ErrorAction SilentlyContinue
+            
+            # Search for the address pattern
+            foreach ($line in $logContent) {
+                # Matches patterns like: something.playit.gg:12345 OR something.gl.joinmc.link:12345
+                if ($line -match '(\S+\.playit\.gg:\d+)|(\S+\.gl\.joinmc\.link:\d+)|(\S+\.ply\.gg:\d+)') {
+                    $foundUrl = $matches[0]
+                    break
                 }
-             }
+            }
+            
+            if ($foundUrl) { break }
+            
+            Write-Host "Waiting for Tunnel/URL... ($i/$maxRetries)"
+            Start-Sleep -Seconds 6
           }
 
-          if (-not $publicUrl) {
-            Write-Error "CRITICAL: Could not find Playit Public URL in logs!"
+          # Debug: Show logs if failed
+          if (-not $foundUrl) {
+            Write-Host "--- PLAYIT LOGS (LAST 20 LINES) ---"
+            Get-Content "playit.log" -Tail 20
+            Write-Host "-----------------------------------"
+            Write-Error "CRITICAL: Could not find Playit Public URL! Did you create the Tunnel on the website?"
             exit 1
           }
 
           Write-Host "======================================"
-          Write-Host "PUBLIC RDP ADDRESS: $publicUrl"
+          Write-Host "PUBLIC RDP ADDRESS: $foundUrl"
           Write-Host "======================================"
 
-          # 5. Send to Firebase
+          # 3. Update Firebase
           $DOC_ID = "${{ github.event.inputs.instance_id }}"
           $UID = "${{ github.event.inputs.user_id }}"
           $PROJECT_ID = "rdp-manager-2f92e" 
@@ -138,14 +132,14 @@ jobs:
           
           $body = @{
             fields = @{
-              ip = @{ stringValue = $publicUrl }
+              ip = @{ stringValue = $foundUrl }
               status = @{ stringValue = "Active" }
             }
           } | ConvertTo-Json -Depth 5
 
           try {
             Invoke-RestMethod -Method Patch -Uri $url -Body $body -ContentType "application/json" -ErrorAction Stop
-            Write-Host "✅ SUCCESS! Firebase Updated with Playit URL."
+            Write-Host "✅ SUCCESS! Firebase Updated."
           } catch {
             Write-Error "❌ FAILED to update Firebase. Error: $_"
             exit 1
