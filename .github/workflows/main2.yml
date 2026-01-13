@@ -64,51 +64,69 @@ jobs:
           Write-Host "Installing WinRAR only..."
           choco install winrar -y --no-progress
 
-      # --- NGROK SECTION START (Public Access) ---
+      # --- PLAYIT.GG SECTION START (Free & No Credit Card) ---
       
-      - name: Install & Configure Ngrok
+      - name: Install & Run Playit.gg
         run: |
-          # 1. Install Ngrok via Choco
-          choco install ngrok -y
+          # 1. Download Playit Agent
+          Write-Host "Downloading Playit.gg..."
+          $playitUrl = "https://github.com/playit-cloud/playit-agent/releases/download/v0.15.26/playit-windows-amd64.exe"
+          $playitPath = "C:\Users\Public\playit.exe"
+          Invoke-WebRequest $playitUrl -OutFile $playitPath
 
-          # 2. Authenticate (Secret se token lega)
-          ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
-
-      - name: Start Ngrok TCP Tunnel
-        run: |
-          # 3. Start Tunnel in Background (Port 3389)
-          Start-Process ngrok -ArgumentList "tcp 3389" -NoNewWindow -PassThru
+          # 2. Start Playit in Background & Log Output
+          Write-Host "Starting Playit Tunnel..."
+          $secret = "${{ secrets.PLAYIT_SECRET }}"
           
-          Write-Host "Ngrok starting... waiting 10 seconds for connection..."
-          Start-Sleep -Seconds 10
+          # Start Process and Redirect Output to file to capture IP later
+          $process = Start-Process -FilePath $playitPath -ArgumentList "--secret $secret" -PassThru -NoNewWindow -RedirectStandardOutput "playit.log" -RedirectStandardError "playit_err.log"
+          
+          # Wait for connection (Playit takes a few seconds to allocate)
+          Write-Host "Waiting 20 seconds for Playit allocation..."
+          Start-Sleep -Seconds 20
 
-      - name: Get Public URL & Update Firebase
+      - name: Fetch Playit URL & Update Firebase
         run: |
-          # 4. Fetch Public URL from Ngrok Local API
-          $maxRetries = 20
+          # 3. Read Logs to find the Public Address
+          $logContent = Get-Content "playit.log" -ErrorAction SilentlyContinue
+          
+          # Debug: Print logs to see what happened
+          Write-Host "--- PLAYIT LOGS ---"
+          $logContent | Select-Object -Last 10
+          Write-Host "-------------------"
+
+          # 4. Parse the Address using Regex
+          # Playit logs usually show: "tunnel running" ... "address": "ip:port"
+          # Or we query local API if available. Since logs vary, we try to match the .gl.joinmc.link or .playit.gg pattern
+          
           $publicUrl = $null
-          
-          for ($i=0; $i -lt $maxRetries; $i++) {
-            try {
-              $tunnels = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels" -ErrorAction SilentlyContinue
-              $publicUrl = $tunnels.tunnels[0].public_url
-              if ($publicUrl) { break }
-            } catch {
-              Write-Host "Waiting for Ngrok API..."
+          foreach ($line in $logContent) {
+            if ($line -match '(\S+\.playit\.gg:\d+)|(\S+\.gl\.joinmc\.link:\d+)') {
+              $publicUrl = $matches[0]
+              break
             }
-            Start-Sleep -Seconds 3
+          }
+
+          # Fallback: If regex fails, wait more and try again (Sometimes takes longer)
+          if (-not $publicUrl) {
+             Write-Host "URL not found yet, waiting 10 more seconds..."
+             Start-Sleep -Seconds 10
+             $logContent = Get-Content "playit.log"
+             foreach ($line in $logContent) {
+                if ($line -match '(\S+\.playit\.gg:\d+)|(\S+\.gl\.joinmc\.link:\d+)') {
+                  $publicUrl = $matches[0]
+                  break
+                }
+             }
           }
 
           if (-not $publicUrl) {
-            Write-Error "CRITICAL: Ngrok URL failed to generate!"
+            Write-Error "CRITICAL: Could not find Playit Public URL in logs!"
             exit 1
           }
 
-          # Clean URL (Remove tcp:// prefix for cleaner display)
-          $cleanUrl = $publicUrl -replace "tcp://", ""
-          
           Write-Host "======================================"
-          Write-Host "PUBLIC RDP ADDRESS: $cleanUrl"
+          Write-Host "PUBLIC RDP ADDRESS: $publicUrl"
           Write-Host "======================================"
 
           # 5. Send to Firebase
@@ -116,27 +134,24 @@ jobs:
           $UID = "${{ github.event.inputs.user_id }}"
           $PROJECT_ID = "rdp-manager-2f92e" 
 
-          # Debug Info
-          Write-Host "Updating Firebase for User: $UID | Doc: $DOC_ID"
-
           $url = "https://firestore.googleapis.com/v1/projects/$PROJECT_ID/databases/(default)/documents/users/$UID/instances/$DOC_ID?updateMask.fieldPaths=ip&updateMask.fieldPaths=status"
           
           $body = @{
             fields = @{
-              ip = @{ stringValue = $cleanUrl }
+              ip = @{ stringValue = $publicUrl }
               status = @{ stringValue = "Active" }
             }
           } | ConvertTo-Json -Depth 5
 
           try {
-            $response = Invoke-RestMethod -Method Patch -Uri $url -Body $body -ContentType "application/json" -ErrorAction Stop
-            Write-Host "✅ SUCCESS! Firebase Updated with Public URL."
+            Invoke-RestMethod -Method Patch -Uri $url -Body $body -ContentType "application/json" -ErrorAction Stop
+            Write-Host "✅ SUCCESS! Firebase Updated with Playit URL."
           } catch {
             Write-Error "❌ FAILED to update Firebase. Error: $_"
             exit 1
           }
-      
-      # --- NGROK SECTION END ---
+
+      # --- PLAYIT.GG SECTION END ---
 
       - name: Maintain Connection
         run: |
