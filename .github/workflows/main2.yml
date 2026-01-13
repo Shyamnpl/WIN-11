@@ -89,26 +89,51 @@ jobs:
 
       - name: Send IP Back to Firebase
         run: |
-          $IP = $env:TAILSCALE_IP
+          # 1. Capture Inputs & Environment Variables
+          $IP = "$env:TAILSCALE_IP"
           $DOC_ID = "${{ github.event.inputs.instance_id }}"
           $UID = "${{ github.event.inputs.user_id }}"
-          
-          # Yahan Project ID tumhara wala hai
-          $PROJECT_ID = "rdp-manager-2f92e" 
-          
-          # Firestore REST API URL
-          $url = "https://firestore.googleapis.com/v1/projects/$PROJECT_ID/databases/(default)/documents/users/$UID/instances/$DOC_ID?updateMask.fieldPaths=ip&updateMask.fieldPaths=status"
-          
-          # JSON Payload
+          $PROJECT_ID = "rdp-manager-2f92e" # Tumhara Project ID (Logs se confirm kiya hai)
+
+          # 2. DEBUG PRINT (Console me check karna agar fail ho)
+          Write-Host "--------------------------------"
+          Write-Host "DEBUG INFO:"
+          Write-Host "TAILSCALE IP : $IP"
+          Write-Host "DOCUMENT ID  : $DOC_ID"
+          Write-Host "USER UID     : $UID"
+          Write-Host "--------------------------------"
+
+          # 3. Check if ID is missing
+          if (-not $DOC_ID) {
+            Write-Error "CRITICAL ERROR: Document ID is EMPTY! Website didn't send the ID correctly."
+            exit 1
+          }
+
+          # 4. Construct URL Safely
+          $baseUrl = "https://firestore.googleapis.com/v1/projects/$PROJECT_ID/databases/(default)/documents/users/$UID/instances/$DOC_ID"
+          $queryParams = "?updateMask.fieldPaths=ip&updateMask.fieldPaths=status"
+          $fullUrl = $baseUrl + $queryParams
+
+          Write-Host "Target URL: $fullUrl"
+
+          # 5. JSON Payload
           $body = @{
             fields = @{
               ip = @{ stringValue = $IP }
               status = @{ stringValue = "Active" }
             }
-          } | ConvertTo-Json -Depth 10
+          } | ConvertTo-Json -Depth 5
 
-          # Send Request
-          Invoke-RestMethod -Method Patch -Uri $url -Body $body -ContentType "application/json"
+          # 6. Send Request with Error Handling
+          try {
+            $response = Invoke-RestMethod -Method Patch -Uri $fullUrl -Body $body -ContentType "application/json" -ErrorAction Stop
+            Write-Host "✅ SUCCESS! Firebase Updated."
+            Write-Host ($response | ConvertTo-Json -Depth 5)
+          } catch {
+            Write-Error "❌ FAILED to update Firebase. Error details:"
+            Write-Error $_
+            exit 1
+          }
 
       - name: Verify RDP
         run: |
