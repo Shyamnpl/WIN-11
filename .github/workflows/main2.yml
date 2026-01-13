@@ -2,7 +2,11 @@ name: WIN 11
 
 on:
   workflow_dispatch:
-
+    inputs:
+      user_id:
+        description: 'User ID for Database'
+        required: false
+        default: 'admin'
 jobs:
   SK-Run:
     name: Click Me!!
